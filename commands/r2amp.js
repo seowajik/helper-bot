@@ -1,4 +1,3 @@
-require("dotenv").config();
 const {
   S3Client,
   ListObjectsV2Command,
@@ -9,8 +8,9 @@ const {
 } = require("@aws-sdk/client-s3");
 const cheerio = require("cheerio");
 const crypto = require("crypto");
+const logger = require("../utils/logger"); // Pastikan logger aktif
 
-// Inisialisasi S3 client untuk R2
+// Inisialisasi S3 client untuk Cloudflare R2
 const s3Client = new S3Client({
   region: "auto",
   endpoint: process.env.R2_ENDPOINT,
@@ -20,12 +20,12 @@ const s3Client = new S3Client({
   },
 });
 
-// Helper: Hash generator untuk checksum (validasi integritas)
+// Helper: Hash generator untuk checksum
 async function generateChecksum(content) {
   return crypto.createHash("sha256").update(content).digest("hex");
 }
 
-// Fungsi untuk mengedit link dalam satu file
+// Fungsi untuk mengedit link dalam satu file HTML
 async function editLinksInFile(fileName, linkMap) {
   let resultSummary = {
     fileName,
@@ -34,83 +34,74 @@ async function editLinksInFile(fileName, linkMap) {
     error: null,
   };
 
+  logger.info(`Memproses file: ${fileName}`); // Logging awal
+
   try {
-    // Ambil file asli dari R2
+    // STEP 1: Ambil file asli dari R2
+    logger.info(`[1] Mengambil file dari bucket R2: ${fileName}`);
     const getParams = {
       Bucket: process.env.R2_BUCKET,
       Key: fileName,
     };
 
     const { Body } = await s3Client.send(new GetObjectCommand(getParams));
-    const originalHtmlContent = await Body.transformToString();
+    const originalHtmlContent = await Body.transformToString(); // Ambil konten asli dalam bentuk string
 
-    // Simpan checksum file asli (untuk validasi)
-    const originalChecksum = await generateChecksum(originalHtmlContent);
+    logger.info(`[1.1] Berhasil mengambil file: ${fileName}`);
 
-    // Parse HTML dan modifikasi file
-    const $ = cheerio.load(originalHtmlContent);
-    let updated = false;
+    // STEP 2: Modifikasi konten HTML menggunakan cheerio
+    logger.info(`[2] Modifikasi konten HTML dari file: ${fileName}`);
+    const $ = cheerio.load(originalHtmlContent); // Gunakan cheerio untuk manipulasi HTML
+    let updated = false; // Flag untuk melacak apakah ada perubahan
 
     $("a").each((i, elem) => {
       const href = $(elem).attr("href");
-      for (const [oldLink, newLink] of Object.entries(linkMap)) {
-        if (href && href.includes(oldLink)) {
-          $(elem).attr("href", href.replace(oldLink, newLink));
-          updated = true;
-          resultSummary.changes += 1; // Tambahkan perubahan yang diterapkan
+      if (href) {
+        // Pastikan href tidak null
+        for (const [oldLink, newLink] of Object.entries(linkMap)) {
+          if (href.includes(oldLink)) {
+            $(elem).attr("href", href.replace(oldLink, newLink)); // Ganti link lama dengan link baru
+            updated = true;
+            resultSummary.changes += 1; // Hitung jumlah perubahan
+            logger.info(
+              `[2.1] Link diperbarui: ${oldLink} -> ${newLink} di ${fileName}`
+            );
+          }
         }
       }
     });
 
-    // Jika tidak ada perubahan, tidak perlu lanjutkan (skip update)
+    // Jika tidak ada perubahan, skip update
     if (!updated) {
-      resultSummary.status = "no_changes";
-      return resultSummary; // Kembalikan hasil tanpa perubahan
+      logger.info(`[2.2] Tidak ada perubahan pada file: ${fileName}`);
+      resultSummary.status = "no_changes"; // Tandai tidak ada perubahan
+      return resultSummary; // Langsung keluar jika tidak ada perubahan
     }
 
-    // Konversi kembali ke string
-    const updatedHtmlContent = $.html();
-
-    // Generate checksum dari file yang baru
-    const updatedChecksum = await generateChecksum(updatedHtmlContent);
-
-    // *** Proses Upload ke Temporary File ***
-    const tempFileName = `temp_${fileName}`; // Lokasi temporary
+    // STEP 3: Upload file yang telah diedit ke tempat sementara
+    logger.info(`[3] Mengunggah file sementara untuk: ${fileName}`);
+    const tempFileName = `temp_${fileName}`;
     const uploadParams = {
       Bucket: process.env.R2_BUCKET,
-      Key: tempFileName, // Upload ke temporary
-      Body: updatedHtmlContent,
+      Key: tempFileName, // Simpan dalam temp file
+      Body: $.html(), // Konversi kembali ke string
       ContentType: "text/html",
     };
 
     await s3Client.send(new PutObjectCommand(uploadParams));
+    logger.info(`[3.1] File sementara terunggah: ${tempFileName}`);
 
-    // Setelah upload berhasil, validasi file yang di-upload tidak corrupt
-    const getTempFileParams = {
-      Bucket: process.env.R2_BUCKET,
-      Key: tempFileName,
-    };
-    const { Body: tempFileBody } = await s3Client.send(
-      new GetObjectCommand(getTempFileParams)
-    );
-    const tempFileContent = await tempFileBody.transformToString();
-    const tempFileChecksum = await generateChecksum(tempFileContent);
-
-    if (tempFileChecksum !== updatedChecksum) {
-      throw new Error(
-        "File di lokasi temporary corrupt (checksum tidak cocok). Rollback..."
-      );
-    }
-
-    // *** Commit: Copy dari temp file ke file asli ***
+    // STEP 4: Commit perubahan dengan menyalin dari file sementara ke file asli
+    logger.info(`[4] Menyalin file sementara ke file asli: ${fileName}`);
     const copyParams = {
       Bucket: process.env.R2_BUCKET,
       CopySource: `${process.env.R2_BUCKET}/${tempFileName}`,
-      Key: fileName, // Salin ke file asli
+      Key: fileName,
     };
     await s3Client.send(new CopyObjectCommand(copyParams));
 
-    // *** Cleanup: Menghapus temporary file setelah commit sukses ***
+    // STEP 5: Cleanup, hapus temporary file setelah berhasil commit
+    logger.info(`[5] Menghapus file sementara: ${tempFileName}`);
     await s3Client.send(
       new DeleteObjectCommand({
         Bucket: process.env.R2_BUCKET,
@@ -120,10 +111,12 @@ async function editLinksInFile(fileName, linkMap) {
 
     resultSummary.status = "success";
   } catch (error) {
+    // Tangkap error dan catat error log
+    logger.error(`Error processing file ${fileName}:`, error);
     resultSummary.status = "error";
     resultSummary.error = error.message;
 
-    // Rollback jika ada kegagalan
+    // Rollback: Hapus temporary file jika ada error
     if (typeof tempFileName !== "undefined") {
       try {
         await s3Client.send(
@@ -132,43 +125,80 @@ async function editLinksInFile(fileName, linkMap) {
             Key: tempFileName,
           })
         );
+        logger.info(`[Rollback] File temporary dihapus: ${tempFileName}`);
       } catch (rollbackError) {
-        console.error("Rollback failed:", rollbackError);
+        logger.error("Rollback gagal:", rollbackError);
       }
     }
   }
 
-  return resultSummary; // Kembalikan ringkasan hasil ke hasil komprehensif
+  return resultSummary; // Kembalikan hasil pemrosesan file
 }
 
-// Fungsi untuk memproses semua file HTML
-async function bulkEditLinks(linkMap) {
-  let processingResults = [];
+// Fungsi untuk mencari file yang mengandung `oldLink`
+async function findFilesWithOldLink(oldLink) {
+  let filesWithOldLink = [];
 
   try {
+    // Dapatkan daftar semua objek di bucket
     const listParams = { Bucket: process.env.R2_BUCKET };
     const { Contents } = await s3Client.send(
       new ListObjectsV2Command(listParams)
     );
+
+    logger.info(`Ditemukan ${Contents.length} file dalam bucket`);
+
+    // Filter file HTML untuk diproses
     const htmlFiles = Contents.filter((obj) => obj.Key.endsWith(".html"));
 
+    logger.info(`Memulai pencarian di ${htmlFiles.length} file...`);
+
+    // Cari oldLink dalam setiap file HTML
     for (const file of htmlFiles) {
-      const result = await editLinksInFile(file.Key, linkMap);
-      processingResults.push(result);
+      logger.info(`Memeriksa file: ${file.Key}`);
+
+      const getParams = {
+        Bucket: process.env.R2_BUCKET,
+        Key: file.Key,
+      };
+
+      // Ambil konten file
+      const { Body } = await s3Client.send(new GetObjectCommand(getParams));
+      const htmlContent = await Body.transformToString();
+
+      // Cari apakah oldLink ada di dalam file
+      if (htmlContent.includes(oldLink)) {
+        filesWithOldLink.push(file.Key);
+        logger.info(`oldLink ditemukan di file: ${file.Key}`);
+      }
     }
   } catch (error) {
-    console.error("Error saat memproses file:", error);
-    processingResults.push({ status: "error", error: error.message });
+    logger.error("Error saat mencari oldLink dalam file:", error);
   }
 
-  return processingResults; // Kembalikan hasil pemrosesan secara keseluruhan
+  return filesWithOldLink; // Kembalikan daftar file yang mengandung oldLink
 }
 
-// Ringkasan hasil dalam bentuk pesan tunggal
+// Fungsi untuk memproses semua file yang mengandung `oldLink`
+async function bulkEditLinks(linkMap, filesWithOldLink) {
+  let processingResults = [];
+
+  logger.info("Memulai bulkEditLinks pada file-file yang ditemukan");
+
+  // Proses hanya file yang mengandung `oldLink`
+  for (const fileName of filesWithOldLink) {
+    const result = await editLinksInFile(fileName, linkMap);
+    processingResults.push(result);
+  }
+
+  return processingResults; // Kembalikan hasil komprehensif
+}
+
+// Ringkasan hasil yang akan dikirim ke pengguna
 function generateSummaryMessage(results) {
-  let successCount = 0;
-  let noChangeCount = 0;
-  let errorCount = 0;
+  let successCount = 0,
+    noChangeCount = 0,
+    errorCount = 0;
   let message = `Summary of the R2 Bucket Processing:\n`;
 
   results.forEach((result) => {
@@ -185,18 +215,19 @@ function generateSummaryMessage(results) {
   });
 
   message += `\nSummary of Operation:\n- Success: ${successCount}\n- No Changes: ${noChangeCount}\n- Errors: ${errorCount}\n`;
-  return message;
+
+  return message; // Return final summary message
 }
 
+// Ekspor command untuk dipakai di bot
 module.exports = {
   name: "r2amp",
   description: "Replace semua destination link tertentu pada semua LP amp.",
   action: async (ctx) => {
-    // Ambil data dari pesan yang diterima di chat bot
     const message = ctx.message.text;
-    const args = message.split(" ").slice(1); // Ambil argumen setelah '/r2amp'
+    const args = message.split(" ").slice(1); // Ambil argumen setelah /r2amp
 
-    // Minimal butuh 2 argumen (oldLink dan newLink)
+    // Minimal memerlukan 2 argumen
     if (args.length < 2) {
       return ctx.reply(
         "Format tidak valid. Gunakan format: /r2amp [oldLink] [newLink]"
@@ -205,14 +236,44 @@ module.exports = {
 
     const [oldLink, newLink] = args;
 
-    // Buat peta link (linkMap)
+    logger.info(
+      `Command /r2amp digunakan oleh user: ${
+        ctx.message.from.username || ctx.message.from.id
+      }`
+    );
+
+    // Validasi link sederhana
+    const urlRegex = /^(https?:\/\/[^\s/$.?#].[^\s]*)$/i;
+    if (!urlRegex.test(oldLink) || !urlRegex.test(newLink)) {
+      logger.info(`Link tidak valid: oldLink: ${oldLink}, newLink: ${newLink}`);
+      return ctx.reply(
+        "❗ Link yang diberikan tidak valid. Harap gunakan URL yang benar."
+      );
+    }
+
+    // Buat map link
     const linkMap = {};
     linkMap[oldLink] = newLink;
 
-    // Eksekusi bulkEditLinks
-    const results = await bulkEditLinks(linkMap);
+    await ctx.reply("🔍 Mencari file yang mengandung oldLink...");
 
-    // Kirim hasil operasinya dalam satu pesan
+    // Tahap pencarian: Cari file yang mengandung oldLink
+    const filesWithOldLink = await findFilesWithOldLink(oldLink);
+
+    if (filesWithOldLink.length === 0) {
+      return ctx.reply(
+        `Tidak ditemukan file HTML yang mengandung link ${oldLink}`
+      );
+    }
+
+    await ctx.reply(
+      `Ditemukan ${filesWithOldLink.length} file yang mengandung oldLink. Memproses...`
+    );
+
+    // Tahap penggantian: Replace oldLink ke newLink di semua file yang ditemukan
+    const results = await bulkEditLinks(linkMap, filesWithOldLink);
+
+    // Kirim summary hasil operasinya kepada user
     const summaryMessage = generateSummaryMessage(results);
     await ctx.reply(summaryMessage);
   },
