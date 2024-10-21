@@ -97,7 +97,7 @@ module.exports = {
         // Simpan hasil update untuk setiap shortlink ke array hasil
         if (isUpdated) {
           updateResults.push(
-            `✅ *Berhasil memperbarui* ${link.keyword} -> *${newDestination}*`
+            `✅ *Berhasil memperbarui* ${apiEndpoint}/${link.keyword} -> *${newDestination}*`
           );
         } else {
           updateResults.push(`❌ *Gagal memperbarui* ${link.keyword}`);
