@@ -7,7 +7,6 @@ const {
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
 const cheerio = require("cheerio");
-const crypto = require("crypto");
 const logger = require("../utils/logger");
 
 // Inisialisasi S3 client untuk Cloudflare R2
@@ -19,11 +18,6 @@ const s3Client = new S3Client({
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
   },
 });
-
-// Helper: generator checksum
-async function generateChecksum(content) {
-  return crypto.createHash("sha256").update(content).digest("hex");
-}
 
 // Helper untuk men-escape regex dari URL
 function escapeRegex(string) {
