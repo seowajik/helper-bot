@@ -1,9 +1,9 @@
 require("dotenv").config();
 const axios = require("axios");
+const logger = require("../utils/logger"); // Mengimpor logger dari utils/logger.js
 
-// Fungsi untuk membuat request ke API serper
+// Fungsi untuk membuat request ke API Serper
 async function checkKeywordRanking(keyword) {
-  // Request body dengan keyword dan parameter
   let data = JSON.stringify({
     q: keyword, // Keyword dari input user
     location: "Jakarta, Indonesia", // Lokasi pencarian di Google
@@ -12,26 +12,23 @@ async function checkKeywordRanking(keyword) {
     autocorrect: false, // Tidak melakukan koreksi otomatis
   });
 
-  // Konfigurasi request
   let config = {
     method: "post",
-    url: "https://google.serper.dev/search", // URL yang benar dari serper.dev
+    url: "https://google.serper.dev/search",
     headers: {
-      "X-API-KEY": process.env.SERPER_API_KEY, // API Key dari serper.dev
+      "X-API-KEY": process.env.SERPER_API_KEY,
       "Content-Type": "application/json",
     },
     data: data,
   };
 
   try {
-    // Mengirim request dengan Axios
     const response = await axios(config);
     return response.data; // Hasil pencarian
   } catch (error) {
-    console.error(
-      "Error while fetching keyword ranking:",
-      error.response?.data || error.message
-    );
+    logger.error("Error while fetching keyword ranking:", {
+      errorMessage: error.response?.data || error.message,
+    });
     throw new Error("Gagal mendapatkan hasil pencarian.");
   }
 }
@@ -40,16 +37,12 @@ async function checkKeywordRanking(keyword) {
 function formatSearchResultsToText(data, keyword) {
   let message = `📊 **Keyword Ranking Results for:** "${keyword}"\n\n`;
 
-  // Top Organic Results (hasil pencarian organik)
   if (data.organic && data.organic.length > 0) {
     message += "__Top Organic Results:__\n";
-
     data.organic.forEach((result, index) => {
       message += `\n${index + 1}. **${result.title}**\n`;
       message += `🌐 URL: ${result.link}\n`;
-      if (result.snippet) {
-        message += `📝 Snippet: ${result.snippet}\n`;
-      }
+      if (result.snippet) message += `📝 Snippet: ${result.snippet}\n`;
     });
   } else {
     message += "Tidak ada hasil pencarian organik untuk keyword ini.\n";
@@ -58,7 +51,6 @@ function formatSearchResultsToText(data, keyword) {
   // Tambahan jika ada "Top Stories" atau "People Also Ask"
   if (data.topStories && data.topStories.length > 0) {
     message += `\n📰 **Top Stories Results**\n`;
-
     data.topStories.forEach((article, index) => {
       message += `\n${index + 1}. **${article.title}**\n`;
       message += `🌐 URL: ${article.link}\n`;
@@ -67,12 +59,9 @@ function formatSearchResultsToText(data, keyword) {
 
   if (data.peopleAlsoAsk && data.peopleAlsoAsk.length > 0) {
     message += `\n🧐 **People Also Ask**\n`;
-
     data.peopleAlsoAsk.forEach((ask, index) => {
       message += `\n${index + 1}. **${ask.question}**\n`;
-      if (ask.answer) {
-        message += `📝 Answer: ${ask.answer}\n`;
-      }
+      if (ask.answer) message += `📝 Answer: ${ask.answer}\n`;
     });
   }
 
@@ -81,10 +70,12 @@ function formatSearchResultsToText(data, keyword) {
 
 module.exports = {
   name: "cekindex",
-  description: "Cekindex dari sebuah keyword tertentu lokasi indonesia.",
+  description: "Cekindex dari sebuah keyword tertentu lokasi Indonesia.",
   action: async (ctx) => {
     const message = ctx.message.text;
-    const args = message.split(" ").slice(1); // Argumen setelah '/cekindex'
+    const args = message.split(" ").slice(1); // Ambil keyword setelah command '/cekindex'
+    const userId = ctx.message?.from?.id; // Dapatkan ID pengguna dari message
+    const username = ctx.message?.from?.username; // Dapatkan username dari message
 
     // Pastikan user memasukkan keyword
     if (args.length === 0) {
@@ -93,19 +84,41 @@ module.exports = {
       );
     }
 
-    const keyword = args.join(" "); // Gabungkan argumen menjadi keyword utuh
+    const keyword = args.join(" "); // Menggabungkan argumen menjadi keyword penuh
 
     try {
-      // Request ke serper API untuk mendapatkan hasil
+      // Log saat proses pencarian dimulai oleh user
+      logger.info(
+        `User ${userId} requested SEO index check for keyword: "${keyword}"`,
+        {
+          userId,
+          username,
+          keyword,
+        }
+      );
+
+      // Mengambil hasil pencarian keyword melalui API serper
       const searchData = await checkKeywordRanking(keyword);
 
       // Format hasil menjadi pesan yang lebih rapi
       const formattedMessage = formatSearchResultsToText(searchData, keyword);
 
-      // Kirim pesan hasil ke pengguna
-      await ctx.replyWithMarkdown(formattedMessage); // Kirim hasil dalam format Markdown
+      // Kirimkan balasan yang sudah diformat ke user
+      await ctx.replyWithMarkdown(formattedMessage); // Mengirim pesan hasil pencarian
     } catch (error) {
-      console.error("Error in cekindex command:", error.message);
+      // Log error jika terjadi masalah saat pencarian
+      logger.error(
+        `Error occurred in /cekindex command for keyword "${keyword}"`,
+        {
+          userId,
+          username,
+          keyword,
+          errorMessage: error.message,
+          stack: error.stack,
+        }
+      );
+
+      // Kirim balasan error ke user
       await ctx.reply(`Terjadi kesalahan: ${error.message}`);
     }
   },

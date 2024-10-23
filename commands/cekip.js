@@ -1,14 +1,13 @@
 require("dotenv").config();
 const axios = require("axios");
+const logger = require("../utils/logger"); // Mengimpor logger dari utils/logger.js
 
 // Fungsi untuk memformat data balasan dari API IP ke dalam teks informatif
 function formatIpInfo(data) {
-  // Jika status dari API gagal
   if (data.status !== "success") {
     return `❌ Gagal mengambil informasi IP. Pesan: ${data.message}`;
   }
 
-  // Format pesan yang rapi dan informatif
   return `
 🌏 **Detail Lokasi untuk IP: ${data.query}**
 
@@ -41,14 +40,12 @@ function formatIpInfo(data) {
 
 // Fungsi untuk mengambil data IP dari API ip-api.com
 async function fetchIpInfo(ip) {
-  // URL dengan IP dan API key dari file env
   const apiUrl = `https://pro.ip-api.com/json/${ip}?key=${process.env.IP_API_KEY}&fields=status,message,continent,continentCode,country,countryCode,countryCode3,region,regionName,city,district,zip,lat,lon,timezone,offset,currentTime,currency,callingCode,isp,org,as,asname,reverse,mobile,proxy,hosting,query`;
 
   try {
     const response = await axios.get(apiUrl);
     return response.data;
   } catch (error) {
-    console.error("Error fetching IP info:", error);
     throw new Error("Gagal mengambil data dari API IP.");
   }
 }
@@ -58,28 +55,46 @@ module.exports = {
   description: "Dapatkan informasi dari sebuah alamat IP tertentu",
   action: async (ctx) => {
     const message = ctx.message.text;
-    const args = message.split(" ").slice(1); // Ambil IP setelah '/cekip'
+    const args = message.split(" ").slice(1); // Ambil IP address yang diinput user
+    const userId = ctx.message?.from?.id; // Dapatkan user ID dari message
+    const username = ctx.message?.from?.username; // Dapatkan username dari message
 
-    // Jika pengguna tidak memberi IP, berikan pesan error
+    // Jika pengguna tidak memasukkan IP address
     if (args.length === 0) {
       return ctx.reply(
         "❌ Harap masukkan IP address yang valid. Contoh: `/cekip 1.1.1.1`"
       );
     }
 
-    const ipAddress = args[0];
+    const ipAddress = args[0]; // IP yang diminta
 
     try {
-      // Ambil informasi IP menggunakan API
+      // Log informasi awal saat command dijalankan
+      logger.info(`User ${userId} requested IP info for ${ipAddress}`, {
+        userId,
+        username,
+        ipAddress,
+      });
+
+      // Ambil informasi IP dari API
       const ipInfo = await fetchIpInfo(ipAddress);
 
-      // Format hasil menjadi pesan yang diatur rapi
+      // Format hasil IP yang diambil dari API
       const formattedMessage = formatIpInfo(ipInfo);
 
-      // Kirim pesan dengan informasi yang diformat
+      // Kirimkan pesan yang sudah diformat
       await ctx.replyWithMarkdown(formattedMessage);
     } catch (error) {
-      console.error("Error in cekip command:", error);
+      // Log kesalahan dengan detailnya
+      logger.error(`Error occurred in /cekip command for IP ${ipAddress}`, {
+        userId,
+        username,
+        ipAddress,
+        errorMessage: error.message,
+        stack: error.stack,
+      });
+
+      // Balas ke user jika terjadi error saat memproses
       await ctx.reply(`❌ Gagal memproses permintaan Anda. Coba lagi nanti.`);
     }
   },

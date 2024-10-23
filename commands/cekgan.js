@@ -1,5 +1,6 @@
 require("dotenv").config();
 const axios = require("axios");
+const logger = require("../utils/logger"); // Mengimpor logger dari utils/logger.js
 
 // Ambil data dari ENV untuk endpoint, username, dan password
 const apiEndpoint = process.env.CEKGAN_ENDPOINT || "https://cekgan.org";
@@ -20,7 +21,10 @@ async function getShortLinks() {
       throw new Error("Tidak ada short links yang ditemukan.");
     }
   } catch (error) {
-    console.error("Error while fetching short links: ", error.message);
+    logger.error("Error while fetching short links.", {
+      errorMessage: error.message,
+      stack: error.stack,
+    });
     throw new Error("❌ Gagal mengambil daftar short links dari API Cekgan.");
   }
 }
@@ -45,12 +49,25 @@ async function updateShortLink(shortcode, newDestination) {
       response.data.statusCode === 200 &&
       response.data.message.includes("success")
     ) {
+      logger.info(`Shortlink ${shortcode} successfully updated.`, {
+        shortcode,
+        newDestination,
+      });
       return true; // Tanda berhasil memperbarui
     } else {
+      logger.warn(`Failed to update shortlink ${shortcode}.`, {
+        shortcode,
+        newDestination,
+      });
       return false; // Tanda gagal memperbarui
     }
   } catch (error) {
-    console.error(`Error while updating link ${shortcode}: `, error.message);
+    logger.error(`Error while updating link ${shortcode}.`, {
+      shortcode,
+      newDestination,
+      errorMessage: error.message,
+      stack: error.stack,
+    });
     return false; // Jika API request gagal atau terjadi error lain
   }
 }
@@ -59,23 +76,36 @@ module.exports = {
   name: "cekgan",
   description: "Replace semua destination link tertentu pada layanan cekgan.",
   action: async (ctx) => {
-    try {
-      // Ambil input dari pengguna dengan format perintah `/cekgan [oldDestination] [newDestination]`
-      const message = ctx.message.text;
-      const args = message.split(" ").slice(1); // Memecah argumen
+    const message = ctx.message.text;
+    const args = message.split(" ").slice(1); // Memecah argumen /cekgan [oldDestination] [newDestination]
+    const userId = ctx.message?.from?.id; // Dapatkan userId dari message
+    const username = ctx.message?.from?.username; // Dapatkan username dari message
 
-      // Validasi input pengguna: pastikan selalu ada 2 argumen yang diberikan
+    try {
+      // Log saat command /cekgan dijalankan oleh user
+      logger.info(`User ${userId} executed /cekgan command.`, {
+        userId,
+        username,
+        args,
+      });
+
+      // Validasi input: pastikan ada 2 argumen yang diberikan
       if (args.length !== 2) {
         return ctx.reply(
           "❗ Harap masukkan perintah dengan format: /cekgan [oldDestination] [newDestination]"
         );
       }
 
-      const oldDestination = args[0]; // Destination lama yang akan dicari
-      const newDestination = args[1]; // Destination baru yang akan diupdate
+      const oldDestination = args[0]; // Destination lama
+      const newDestination = args[1]; // Destination baru
 
       // Langkah 1: Ambil daftar short links dari API Cekgan
       await ctx.reply("🔍 Mengambil daftar short links dari Cekgan...");
+      logger.info("Fetching short links from Cekgan...", {
+        userId,
+        oldDestination,
+        newDestination,
+      });
       const shortLinks = await getShortLinks();
 
       // Langkah 2: Filter short links yang memiliki destination URL yang sama dengan oldDestination
@@ -84,6 +114,10 @@ module.exports = {
       );
 
       if (linksToUpdate.length === 0) {
+        logger.warn(
+          `No short links found with destination: ${oldDestination}`,
+          { userId, oldDestination }
+        );
         return ctx.reply(
           `⚠️ Tidak ditemukan short links dengan destination: *${oldDestination}*`
         );
@@ -105,11 +139,22 @@ module.exports = {
       }
 
       // Langkah 4: Kirim laporan hasil pembaruan ke pengguna (dalam satu pesan)
+      logger.info(`User ${userId} has completed /cekgan command.`, {
+        userId,
+        username,
+        updateResults,
+      });
       await ctx.replyWithMarkdown(
         `📊 **Laporan Pembaruan**:\n\n${updateResults.join("\n")}`
       );
     } catch (error) {
-      console.error("Error in executing /cekgan command:", error.message);
+      // Log setiap error ketika proses gagal
+      logger.error("Error in executing /cekgan command.", {
+        userId,
+        username,
+        errorMessage: error.message,
+        stack: error.stack,
+      });
       await ctx.reply("❌ Terjadi kesalahan saat memperbarui links.");
     }
   },
